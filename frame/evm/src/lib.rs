@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of Frontier.
 //
-// Copyright (c) 2020-2022 Parity Technologies (UK) Ltd.
+// Copyright (c) 2020 Parity Technologies (UK) Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -52,9 +52,7 @@
 
 // Ensure we're `no_std` when compiling for Wasm.
 #![cfg_attr(not(feature = "std"), no_std)]
-#![allow(clippy::too_many_arguments)]
 
-#[cfg(feature = "runtime-benchmarks")]
 pub mod benchmarking;
 
 #[cfg(test)]
@@ -63,6 +61,15 @@ pub mod runner;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "std")]
+use codec::{Decode, Encode};
+pub use evm::{
+	Config as EvmConfig, Context, ExitError, ExitFatal, ExitReason, ExitRevert, ExitSucceed,
+};
+pub use fp_evm::{
+	Account, CallInfo, CreateInfo, ExecutionInfo, LinearCostPrecompile, Log, Precompile,
+	PrecompileFailure, PrecompileOutput, PrecompileResult, PrecompileSet, Vicinity,
+};
 use frame_support::{
 	dispatch::DispatchResultWithPostInfo,
 	traits::{
@@ -72,28 +79,16 @@ use frame_support::{
 	weights::{Pays, PostDispatchInfo, Weight},
 };
 use frame_system::RawOrigin;
+#[cfg(feature = "std")]
+use serde::{Deserialize, Serialize};
 use sp_core::{Hasher, H160, H256, U256};
 use sp_runtime::{
 	traits::{BadOrigin, Saturating, UniqueSaturatedInto, Zero},
-	AccountId32, DispatchErrorWithPostInfo,
+	AccountId32,
 };
-use sp_std::{cmp::min, vec::Vec};
+use sp_std::vec::Vec;
 
-pub use evm::{
-	Config as EvmConfig, Context, ExitError, ExitFatal, ExitReason, ExitRevert, ExitSucceed,
-};
-#[cfg(feature = "std")]
-use fp_evm::GenesisAccount;
-pub use fp_evm::{
-	Account, CallInfo, CreateInfo, ExecutionInfo, FeeCalculator, InvalidEvmTransactionError,
-	LinearCostPrecompile, Log, Precompile, PrecompileFailure, PrecompileHandle, PrecompileOutput,
-	PrecompileResult, PrecompileSet, Vicinity,
-};
-
-pub use self::{
-	pallet::*,
-	runner::{Runner, RunnerError},
-};
+pub use self::{pallet::*, runner::Runner};
 
 #[frame_support::pallet]
 pub mod pallet {
@@ -191,9 +186,7 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			T::CallOrigin::ensure_address_origin(&source, origin)?;
 
-			let is_transactional = true;
-			let validate = true;
-			let info = match T::Runner::call(
+			let info = T::Runner::call(
 				source,
 				target,
 				input,
@@ -203,21 +196,8 @@ pub mod pallet {
 				max_priority_fee_per_gas,
 				nonce,
 				access_list,
-				is_transactional,
-				validate,
 				T::config(),
-			) {
-				Ok(info) => info,
-				Err(e) => {
-					return Err(DispatchErrorWithPostInfo {
-						post_info: PostDispatchInfo {
-							actual_weight: Some(e.weight),
-							pays_fee: Pays::Yes,
-						},
-						error: e.error.into(),
-					})
-				}
-			};
+			)?;
 
 			match info.exit_reason {
 				ExitReason::Succeed(_) => {
@@ -252,9 +232,7 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			T::CallOrigin::ensure_address_origin(&source, origin)?;
 
-			let is_transactional = true;
-			let validate = true;
-			let info = match T::Runner::create(
+			let info = T::Runner::create(
 				source,
 				init,
 				value,
@@ -263,21 +241,8 @@ pub mod pallet {
 				max_priority_fee_per_gas,
 				nonce,
 				access_list,
-				is_transactional,
-				validate,
 				T::config(),
-			) {
-				Ok(info) => info,
-				Err(e) => {
-					return Err(DispatchErrorWithPostInfo {
-						post_info: PostDispatchInfo {
-							actual_weight: Some(e.weight),
-							pays_fee: Pays::Yes,
-						},
-						error: e.error.into(),
-					})
-				}
-			};
+			)?;
 
 			match info {
 				CreateInfo {
@@ -320,9 +285,7 @@ pub mod pallet {
 		) -> DispatchResultWithPostInfo {
 			T::CallOrigin::ensure_address_origin(&source, origin)?;
 
-			let is_transactional = true;
-			let validate = true;
-			let info = match T::Runner::create2(
+			let info = T::Runner::create2(
 				source,
 				init,
 				salt,
@@ -332,21 +295,8 @@ pub mod pallet {
 				max_priority_fee_per_gas,
 				nonce,
 				access_list,
-				is_transactional,
-				validate,
 				T::config(),
-			) {
-				Ok(info) => info,
-				Err(e) => {
-					return Err(DispatchErrorWithPostInfo {
-						post_info: PostDispatchInfo {
-							actual_weight: Some(e.weight),
-							pays_fee: Pays::Yes,
-						},
-						error: e.error.into(),
-					})
-				}
-			};
+			)?;
 
 			match info {
 				CreateInfo {
@@ -407,57 +357,38 @@ pub mod pallet {
 		GasPriceTooLow,
 		/// Nonce is invalid
 		InvalidNonce,
-		/// Gas limit is too low.
-		GasLimitTooLow,
-		/// Gas limit is too high.
-		GasLimitTooHigh,
-		/// Undefined error.
-		Undefined,
-	}
-
-	impl<T> From<InvalidEvmTransactionError> for Error<T> {
-		fn from(validation_error: InvalidEvmTransactionError) -> Self {
-			match validation_error {
-				InvalidEvmTransactionError::GasLimitTooLow => Error::<T>::GasLimitTooLow,
-				InvalidEvmTransactionError::GasLimitTooHigh => Error::<T>::GasLimitTooHigh,
-				InvalidEvmTransactionError::GasPriceTooLow => Error::<T>::GasPriceTooLow,
-				InvalidEvmTransactionError::PriorityFeeTooHigh => Error::<T>::GasPriceTooLow,
-				InvalidEvmTransactionError::BalanceTooLow => Error::<T>::BalanceLow,
-				InvalidEvmTransactionError::TxNonceTooLow => Error::<T>::InvalidNonce,
-				InvalidEvmTransactionError::TxNonceTooHigh => Error::<T>::InvalidNonce,
-				InvalidEvmTransactionError::InvalidPaymentInput => Error::<T>::GasPriceTooLow,
-				_ => Error::<T>::Undefined,
-			}
-		}
 	}
 
 	#[pallet::genesis_config]
-	#[cfg_attr(feature = "std", derive(Default))]
 	pub struct GenesisConfig {
 		pub accounts: std::collections::BTreeMap<H160, GenesisAccount>,
 	}
 
-	#[pallet::genesis_build]
-	impl<T: Config> GenesisBuild<T> for GenesisConfig
-	where
-		U256: UniqueSaturatedInto<BalanceOf<T>>,
-	{
-		fn build(&self) {
-			const MAX_ACCOUNT_NONCE: usize = 100;
+	#[cfg(feature = "std")]
+	impl Default for GenesisConfig {
+		fn default() -> Self {
+			Self {
+				accounts: Default::default(),
+			}
+		}
+	}
 
+	#[pallet::genesis_build]
+	impl<T: Config> GenesisBuild<T> for GenesisConfig {
+		fn build(&self) {
 			for (address, account) in &self.accounts {
 				let account_id = T::AddressMapping::into_account_id(*address);
 
 				// ASSUME: in one single EVM transaction, the nonce will not increase more than
 				// `u128::max_value()`.
-				for _ in 0..min(
-					MAX_ACCOUNT_NONCE,
-					UniqueSaturatedInto::<usize>::unique_saturated_into(account.nonce),
-				) {
+				for _ in 0..account.nonce.low_u128() {
 					frame_system::Pallet::<T>::inc_account_nonce(&account_id);
 				}
 
-				T::Currency::deposit_creating(&account_id, account.balance.unique_saturated_into());
+				T::Currency::deposit_creating(
+					&account_id,
+					account.balance.low_u128().unique_saturated_into(),
+				);
 
 				Pallet::<T>::create_account(*address, account.code.clone());
 
@@ -485,6 +416,18 @@ pub type BalanceOf<T> =
 /// Type alias for negative imbalance during fees
 type NegativeImbalanceOf<C, T> =
 	<C as Currency<<T as frame_system::Config>::AccountId>>::NegativeImbalance;
+
+/// Trait that outputs the current transaction gas price.
+pub trait FeeCalculator {
+	/// Return the minimal required gas price.
+	fn min_gas_price() -> U256;
+}
+
+impl FeeCalculator for () {
+	fn min_gas_price() -> U256 {
+		U256::zero()
+	}
+}
 
 pub trait EnsureAddressOrigin<OuterOrigin> {
 	/// Success return type.
@@ -629,10 +572,24 @@ impl GasWeightMapping for () {
 
 static LONDON_CONFIG: EvmConfig = EvmConfig::london();
 
+#[cfg(feature = "std")]
+#[derive(Clone, Eq, PartialEq, Encode, Decode, Debug, Serialize, Deserialize)]
+/// Account definition used for genesis block construction.
+pub struct GenesisAccount {
+	/// Account nonce.
+	pub nonce: U256,
+	/// Account balance.
+	pub balance: U256,
+	/// Full account storage.
+	pub storage: std::collections::BTreeMap<H256, H256>,
+	/// Account code.
+	pub code: Vec<u8>,
+}
+
 impl<T: Config> Pallet<T> {
 	/// Check whether an account is empty.
 	pub fn is_account_empty(address: &H160) -> bool {
-		let (account, _) = Self::account_basic(address);
+		let account = Self::account_basic(address);
 		let code_len = <AccountCodes<T>>::decode_len(address).unwrap_or(0);
 
 		account.nonce == U256::zero() && account.balance == U256::zero() && code_len == 0
@@ -653,7 +610,7 @@ impl<T: Config> Pallet<T> {
 		}
 
 		<AccountCodes<T>>::remove(address);
-		let _ = <AccountStorages<T>>::remove_prefix(address, None);
+		<AccountStorages<T>>::remove_prefix(address, None);
 	}
 
 	/// Create an account.
@@ -671,20 +628,17 @@ impl<T: Config> Pallet<T> {
 	}
 
 	/// Get the account basic in EVM format.
-	pub fn account_basic(address: &H160) -> (Account, frame_support::weights::Weight) {
+	pub fn account_basic(address: &H160) -> Account {
 		let account_id = T::AddressMapping::into_account_id(*address);
 
 		let nonce = frame_system::Pallet::<T>::account_nonce(&account_id);
 		// keepalive `true` takes into account ExistentialDeposit as part of what's considered liquid balance.
 		let balance = T::Currency::reducible_balance(&account_id, true);
 
-		(
-			Account {
-				nonce: U256::from(UniqueSaturatedInto::<u128>::unique_saturated_into(nonce)),
-				balance: U256::from(UniqueSaturatedInto::<u128>::unique_saturated_into(balance)),
-			},
-			T::DbWeight::get().reads(2),
-		)
+		Account {
+			nonce: U256::from(UniqueSaturatedInto::<u128>::unique_saturated_into(nonce)),
+			balance: U256::from(UniqueSaturatedInto::<u128>::unique_saturated_into(balance)),
+		}
 	}
 
 	/// Get the author using the FindAuthor trait.
@@ -707,18 +661,15 @@ pub trait OnChargeEVMTransaction<T: Config> {
 
 	/// After the transaction was executed the actual fee can be calculated.
 	/// This function should refund any overpaid fees and optionally deposit
-	/// the corrected amount, and handles the base fee rationing using the provided
-	/// `OnUnbalanced` implementation.
-	/// Returns the `NegativeImbalance` - if any - produced by the priority fee.
+	/// the corrected amount.
 	fn correct_and_deposit_fee(
 		who: &H160,
 		corrected_fee: U256,
-		base_fee: U256,
 		already_withdrawn: Self::LiquidityInfo,
-	) -> Self::LiquidityInfo;
+	);
 
-	/// Introduced in EIP1559 to handle the priority tip.
-	fn pay_priority_fee(tip: Self::LiquidityInfo);
+	/// Introduced in EIP1559 to handle the priority tip payment to the block Author.
+	fn pay_priority_fee(tip: U256);
 }
 
 /// Implements the transaction payment for a pallet implementing the `Currency`
@@ -740,19 +691,15 @@ where
 		Opposite = C::PositiveImbalance,
 	>,
 	OU: OnUnbalanced<NegativeImbalanceOf<C, T>>,
-	U256: UniqueSaturatedInto<<C as Currency<<T as frame_system::Config>::AccountId>>::Balance>,
 {
 	// Kept type as Option to satisfy bound of Default
 	type LiquidityInfo = Option<NegativeImbalanceOf<C, T>>;
 
 	fn withdraw_fee(who: &H160, fee: U256) -> Result<Self::LiquidityInfo, Error<T>> {
-		if fee.is_zero() {
-			return Ok(None);
-		}
 		let account_id = T::AddressMapping::into_account_id(*who);
 		let imbalance = C::withdraw(
 			&account_id,
-			fee.unique_saturated_into(),
+			fee.low_u128().unique_saturated_into(),
 			WithdrawReasons::FEE,
 			ExistenceRequirement::AllowDeath,
 		)
@@ -763,16 +710,15 @@ where
 	fn correct_and_deposit_fee(
 		who: &H160,
 		corrected_fee: U256,
-		base_fee: U256,
 		already_withdrawn: Self::LiquidityInfo,
-	) -> Self::LiquidityInfo {
+	) {
 		if let Some(paid) = already_withdrawn {
 			let account_id = T::AddressMapping::into_account_id(*who);
 
 			// Calculate how much refund we should return
 			let refund_amount = paid
 				.peek()
-				.saturating_sub(corrected_fee.unique_saturated_into());
+				.saturating_sub(corrected_fee.low_u128().unique_saturated_into());
 			// refund to the account that paid the fees. If this fails, the
 			// account might have dropped below the existential balance. In
 			// that case we don't refund anything.
@@ -802,21 +748,13 @@ where
 				.offset(refund_imbalance)
 				.same()
 				.unwrap_or_else(|_| C::NegativeImbalance::zero());
-
-			let (base_fee, tip) = adjusted_paid.split(base_fee.unique_saturated_into());
-			// Handle base fee. Can be either burned, rationed, etc ...
-			OU::on_unbalanced(base_fee);
-			return Some(tip);
+			OU::on_unbalanced(adjusted_paid);
 		}
-		None
 	}
 
-	fn pay_priority_fee(tip: Self::LiquidityInfo) {
-		// Default Ethereum behaviour: issue the tip to the block author.
-		if let Some(tip) = tip {
-			let account_id = T::AddressMapping::into_account_id(<Pallet<T>>::find_author());
-			let _ = C::deposit_into_existing(&account_id, tip.peek());
-		}
+	fn pay_priority_fee(tip: U256) {
+		let account_id = T::AddressMapping::into_account_id(<Pallet<T>>::find_author());
+		let _ = C::deposit_into_existing(&account_id, tip.low_u128().unique_saturated_into());
 	}
 }
 
@@ -827,10 +765,7 @@ impl<T> OnChargeEVMTransaction<T> for ()
 	<T::Currency as Currency<<T as frame_system::Config>::AccountId>>::PositiveImbalance:
 		Imbalance<<T::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance, Opposite = <T::Currency as Currency<<T as frame_system::Config>::AccountId>>::NegativeImbalance>,
 	<T::Currency as Currency<<T as frame_system::Config>::AccountId>>::NegativeImbalance:
-Imbalance<<T::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance, Opposite = <T::Currency as Currency<<T as frame_system::Config>::AccountId>>::PositiveImbalance>,
-U256: UniqueSaturatedInto<BalanceOf<T>>,
-
-{
+		Imbalance<<T::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance, Opposite = <T::Currency as Currency<<T as frame_system::Config>::AccountId>>::PositiveImbalance>, {
 	// Kept type as Option to satisfy bound of Default
 	type LiquidityInfo = Option<NegativeImbalanceOf<T::Currency, T>>;
 
@@ -844,13 +779,12 @@ U256: UniqueSaturatedInto<BalanceOf<T>>,
 	fn correct_and_deposit_fee(
 		who: &H160,
 		corrected_fee: U256,
-		base_fee: U256,
 		already_withdrawn: Self::LiquidityInfo,
-	) -> Self::LiquidityInfo {
-		<EVMCurrencyAdapter::<<T as Config>::Currency, ()> as OnChargeEVMTransaction<T>>::correct_and_deposit_fee(who, corrected_fee, base_fee, already_withdrawn)
+	) {
+		<EVMCurrencyAdapter::<<T as Config>::Currency, ()> as OnChargeEVMTransaction<T>>::correct_and_deposit_fee(who, corrected_fee, already_withdrawn)
 	}
 
-	fn pay_priority_fee(tip: Self::LiquidityInfo) {
+	fn pay_priority_fee(tip: U256) {
 		<EVMCurrencyAdapter::<<T as Config>::Currency, ()> as OnChargeEVMTransaction<T>>::pay_priority_fee(tip);
 	}
 }

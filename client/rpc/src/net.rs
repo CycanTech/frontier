@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 // This file is part of Frontier.
 //
-// Copyright (c) 2020-2022 Parity Technologies (UK) Ltd.
+// Copyright (c) 2020 Parity Technologies (UK) Ltd.
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -19,25 +19,24 @@
 use std::sync::Arc;
 
 use ethereum_types::H256;
-use jsonrpsee::core::RpcResult as Result;
+use jsonrpc_core::Result;
 use sc_network::{ExHashT, NetworkService};
 use sp_api::ProvideRuntimeApi;
 use sp_blockchain::HeaderBackend;
 use sp_runtime::{generic::BlockId, traits::Block as BlockT};
 
-use fc_rpc_core::{types::PeerCount, NetApiServer};
+use fc_rpc_core::{types::PeerCount, NetApi as NetApiT};
 use fp_rpc::EthereumRuntimeRPCApi;
 
 use crate::internal_err;
 
-/// Net API implementation.
-pub struct Net<B: BlockT, C, H: ExHashT> {
+pub struct NetApi<B: BlockT, C, H: ExHashT> {
 	client: Arc<C>,
 	network: Arc<NetworkService<B, H>>,
 	peer_count_as_hex: bool,
 }
 
-impl<B: BlockT, C, H: ExHashT> Net<B, C, H> {
+impl<B: BlockT, C, H: ExHashT> NetApi<B, C, H> {
 	pub fn new(
 		client: Arc<C>,
 		network: Arc<NetworkService<B, H>>,
@@ -51,7 +50,7 @@ impl<B: BlockT, C, H: ExHashT> Net<B, C, H> {
 	}
 }
 
-impl<B, C, H: ExHashT> NetApiServer for Net<B, C, H>
+impl<B, C, H: ExHashT> NetApiT for NetApi<B, C, H>
 where
 	B: BlockT<Hash = H256> + Send + Sync + 'static,
 	C: HeaderBackend<B> + ProvideRuntimeApi<B> + Send + Sync + 'static,

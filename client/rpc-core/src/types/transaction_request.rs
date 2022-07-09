@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 // This file is part of Frontier.
 //
-// Copyright (c) 2015-2022 Parity Technologies (UK) Ltd.
+// Copyright (c) 2015-2020 Parity Technologies (UK) Ltd.
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -65,17 +65,21 @@ pub struct TransactionRequest {
 	pub transaction_type: Option<U256>,
 }
 
-impl From<TransactionRequest> for Option<TransactionMessage> {
-	fn from(req: TransactionRequest) -> Self {
-		match (req.gas_price, req.max_fee_per_gas, req.access_list.clone()) {
+impl Into<Option<TransactionMessage>> for TransactionRequest {
+	fn into(self) -> Option<TransactionMessage> {
+		match (
+			self.gas_price,
+			self.max_fee_per_gas,
+			self.access_list.clone(),
+		) {
 			// Legacy
 			(Some(_), None, None) => Some(TransactionMessage::Legacy(LegacyTransactionMessage {
 				nonce: U256::zero(),
-				gas_price: req.gas_price.unwrap_or_default(),
-				gas_limit: req.gas.unwrap_or_default(),
-				value: req.value.unwrap_or_default(),
-				input: req.data.map(|s| s.into_vec()).unwrap_or_default(),
-				action: match req.to {
+				gas_price: self.gas_price.unwrap_or_default(),
+				gas_limit: self.gas.unwrap_or_default(),
+				value: self.value.unwrap_or(U256::zero()),
+				input: self.data.map(|s| s.into_vec()).unwrap_or_default(),
+				action: match self.to {
 					Some(to) => ethereum::TransactionAction::Call(to),
 					None => ethereum::TransactionAction::Create,
 				},
@@ -84,33 +88,45 @@ impl From<TransactionRequest> for Option<TransactionMessage> {
 			// EIP2930
 			(_, None, Some(_)) => Some(TransactionMessage::EIP2930(EIP2930TransactionMessage {
 				nonce: U256::zero(),
-				gas_price: req.gas_price.unwrap_or_default(),
-				gas_limit: req.gas.unwrap_or_default(),
-				value: req.value.unwrap_or_default(),
-				input: req.data.map(|s| s.into_vec()).unwrap_or_default(),
-				action: match req.to {
+				gas_price: self.gas_price.unwrap_or_default(),
+				gas_limit: self.gas.unwrap_or_default(),
+				value: self.value.unwrap_or(U256::zero()),
+				input: self.data.map(|s| s.into_vec()).unwrap_or_default(),
+				action: match self.to {
 					Some(to) => ethereum::TransactionAction::Call(to),
 					None => ethereum::TransactionAction::Create,
 				},
 				chain_id: 0,
-				access_list: req.access_list.unwrap_or_default(),
+				access_list: self
+					.access_list
+					.unwrap()
+					.into_iter()
+					.map(|item| item)
+					.collect(),
 			})),
 			// EIP1559
 			(None, Some(_), _) | (None, None, None) => {
 				// Empty fields fall back to the canonical transaction schema.
 				Some(TransactionMessage::EIP1559(EIP1559TransactionMessage {
 					nonce: U256::zero(),
-					max_fee_per_gas: req.max_fee_per_gas.unwrap_or_default(),
-					max_priority_fee_per_gas: req.max_priority_fee_per_gas.unwrap_or_default(),
-					gas_limit: req.gas.unwrap_or_default(),
-					value: req.value.unwrap_or_default(),
-					input: req.data.map(|s| s.into_vec()).unwrap_or_default(),
-					action: match req.to {
+					max_fee_per_gas: self.max_fee_per_gas.unwrap_or_default(),
+					max_priority_fee_per_gas: self
+						.max_priority_fee_per_gas
+						.unwrap_or(U256::from(0)),
+					gas_limit: self.gas.unwrap_or_default(),
+					value: self.value.unwrap_or(U256::zero()),
+					input: self.data.map(|s| s.into_vec()).unwrap_or_default(),
+					action: match self.to {
 						Some(to) => ethereum::TransactionAction::Call(to),
 						None => ethereum::TransactionAction::Create,
 					},
 					chain_id: 0,
-					access_list: req.access_list.unwrap_or_default(),
+					access_list: self
+						.access_list
+						.unwrap_or(Vec::new())
+						.into_iter()
+						.map(|item| item)
+						.collect(),
 				}))
 			}
 			_ => None,

@@ -1,21 +1,18 @@
-// SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
+// Copyright 2017-2020 Parity Technologies (UK) Ltd.
 // This file is part of Frontier.
-//
-// Copyright (c) 2017-2022 Parity Technologies (UK) Ltd.
-//
-// This program is free software: you can redistribute it and/or modify
+
+// Substrate is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+// Substrate is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+
+// You should have received a copy of the GNU General Public License
+// along with Substrate.  If not, see <http://www.gnu.org/licenses/>.
 use std::collections::BTreeMap;
 
 use ethereum::BlockV2 as EthereumBlock;
@@ -31,6 +28,7 @@ mod schema_v1_override;
 mod schema_v2_override;
 mod schema_v3_override;
 
+pub use fc_rpc_core::{EthApiServer, NetApiServer};
 pub use schema_v1_override::SchemaV1Override;
 pub use schema_v2_override::SchemaV2Override;
 pub use schema_v3_override::SchemaV3Override;
@@ -84,7 +82,13 @@ pub struct RuntimeApiStorageOverride<B: BlockT, C> {
 	_marker: PhantomData<B>,
 }
 
-impl<B: BlockT, C> RuntimeApiStorageOverride<B, C> {
+impl<B, C> RuntimeApiStorageOverride<B, C>
+where
+	C: ProvideRuntimeApi<B>,
+	C::Api: EthereumRuntimeRPCApi<B>,
+	B: BlockT<Hash = H256> + Send + Sync + 'static,
+	C: Send + Sync + 'static,
+{
 	pub fn new(client: Arc<C>) -> Self {
 		Self {
 			client,
@@ -95,15 +99,16 @@ impl<B: BlockT, C> RuntimeApiStorageOverride<B, C> {
 
 impl<Block, C> StorageOverride<Block> for RuntimeApiStorageOverride<Block, C>
 where
-	Block: BlockT<Hash = H256> + Send + Sync + 'static,
-	C: ProvideRuntimeApi<Block> + Send + Sync + 'static,
+	C: ProvideRuntimeApi<Block>,
 	C::Api: EthereumRuntimeRPCApi<Block>,
+	Block: BlockT<Hash = H256> + Send + Sync + 'static,
+	C: Send + Sync + 'static,
 {
 	/// For a given account address, returns pallet_evm::AccountCodes.
 	fn account_code_at(&self, block: &BlockId<Block>, address: H160) -> Option<Vec<u8>> {
 		self.client
 			.runtime_api()
-			.account_code_at(block, address)
+			.account_code_at(&block, address)
 			.ok()
 	}
 
@@ -111,7 +116,7 @@ where
 	fn storage_at(&self, block: &BlockId<Block>, address: H160, index: U256) -> Option<H256> {
 		self.client
 			.runtime_api()
-			.storage_at(block, address, index)
+			.storage_at(&block, address, index)
 			.ok()
 	}
 
@@ -120,7 +125,7 @@ where
 		let api = self.client.runtime_api();
 
 		let api_version = if let Ok(Some(api_version)) =
-			api.api_version::<dyn EthereumRuntimeRPCApi<Block>>(block)
+			api.api_version::<dyn EthereumRuntimeRPCApi<Block>>(&block)
 		{
 			api_version
 		} else {
@@ -128,10 +133,14 @@ where
 		};
 		if api_version == 1 {
 			#[allow(deprecated)]
-			let old_block = api.current_block_before_version_2(block).ok()?;
-			old_block.map(|block| block.into())
+			let old_block = api.current_block_before_version_2(&block).ok()?;
+			if let Some(block) = old_block {
+				Some(block.into())
+			} else {
+				None
+			}
 		} else {
-			api.current_block(block).ok()?
+			api.current_block(&block).ok()?
 		}
 	}
 
@@ -140,7 +149,7 @@ where
 		let api = self.client.runtime_api();
 
 		let api_version = if let Ok(Some(api_version)) =
-			api.api_version::<dyn EthereumRuntimeRPCApi<Block>>(block)
+			api.api_version::<dyn EthereumRuntimeRPCApi<Block>>(&block)
 		{
 			api_version
 		} else {
@@ -148,22 +157,26 @@ where
 		};
 		if api_version < 4 {
 			#[allow(deprecated)]
-			let old_receipts = api.current_receipts_before_version_4(block).ok()?;
-			old_receipts.map(|receipts| {
-				receipts
-					.into_iter()
-					.map(|r| {
-						ethereum::ReceiptV3::Legacy(ethereum::EIP658ReceiptData {
-							status_code: r.state_root.to_low_u64_be() as u8,
-							used_gas: r.used_gas,
-							logs_bloom: r.logs_bloom,
-							logs: r.logs,
+			let old_receipts = api.current_receipts_before_version_4(&block).ok()?;
+			if let Some(receipts) = old_receipts {
+				Some(
+					receipts
+						.into_iter()
+						.map(|r| {
+							ethereum::ReceiptV3::Legacy(ethereum::EIP658ReceiptData {
+								status_code: r.state_root.to_low_u64_be() as u8,
+								used_gas: r.used_gas,
+								logs_bloom: r.logs_bloom,
+								logs: r.logs,
+							})
 						})
-					})
-					.collect()
-			})
+						.collect(),
+				)
+			} else {
+				None
+			}
 		} else {
-			self.client.runtime_api().current_receipts(block).ok()?
+			self.client.runtime_api().current_receipts(&block).ok()?
 		}
 	}
 
@@ -174,14 +187,14 @@ where
 	) -> Option<Vec<TransactionStatus>> {
 		self.client
 			.runtime_api()
-			.current_transaction_statuses(block)
+			.current_transaction_statuses(&block)
 			.ok()?
 	}
 
 	/// Return the base fee at the given post-eip1559 height.
 	fn base_fee(&self, block: &BlockId<Block>) -> Option<U256> {
 		if self.is_eip1559(block) {
-			self.client.runtime_api().gas_price(block).ok()
+			self.client.runtime_api().gas_price(&block).ok()
 		} else {
 			None
 		}
@@ -190,7 +203,7 @@ where
 	/// Return the elasticity multiplier at the give post-eip1559 height.
 	fn elasticity(&self, block: &BlockId<Block>) -> Option<Permill> {
 		if self.is_eip1559(block) {
-			self.client.runtime_api().elasticity(block).ok()?
+			self.client.runtime_api().elasticity(&block).ok()?
 		} else {
 			None
 		}
@@ -200,10 +213,10 @@ where
 		if let Ok(Some(api_version)) = self
 			.client
 			.runtime_api()
-			.api_version::<dyn EthereumRuntimeRPCApi<Block>>(block)
+			.api_version::<dyn EthereumRuntimeRPCApi<Block>>(&block)
 		{
 			return api_version >= 2;
 		}
-		false
+		return false;
 	}
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of Frontier.
 //
-// Copyright (c) 2020-2022 Parity Technologies (UK) Ltd.
+// Copyright (c) 2020 Parity Technologies (UK) Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use fp_evm::{
-	ExitError, ExitSucceed, Precompile, PrecompileFailure, PrecompileHandle, PrecompileOutput,
+	Context, ExitError, ExitSucceed, Precompile, PrecompileFailure, PrecompileOutput,
 	PrecompileResult,
 };
 use sp_core::U256;
@@ -76,12 +76,13 @@ impl Bn128Add {
 }
 
 impl Precompile for Bn128Add {
-	fn execute(handle: &mut impl PrecompileHandle) -> PrecompileResult {
+	fn execute(
+		input: &[u8],
+		_target_gas: Option<u64>,
+		_context: &Context,
+		_is_static: bool,
+	) -> PrecompileResult {
 		use bn::AffineG1;
-
-		handle.record_cost(Bn128Add::GAS_COST)?;
-
-		let input = handle.input();
 
 		let p1 = read_point(input, 0)?;
 		let p2 = read_point(input, 64)?;
@@ -107,7 +108,9 @@ impl Precompile for Bn128Add {
 
 		Ok(PrecompileOutput {
 			exit_status: ExitSucceed::Returned,
+			cost: Bn128Add::GAS_COST,
 			output: buf.to_vec(),
+			logs: Default::default(),
 		})
 	}
 }
@@ -120,12 +123,13 @@ impl Bn128Mul {
 }
 
 impl Precompile for Bn128Mul {
-	fn execute(handle: &mut impl PrecompileHandle) -> PrecompileResult {
+	fn execute(
+		input: &[u8],
+		_target_gas: Option<u64>,
+		_context: &Context,
+		_is_static: bool,
+	) -> PrecompileResult {
 		use bn::AffineG1;
-
-		handle.record_cost(Bn128Mul::GAS_COST)?;
-
-		let input = handle.input();
 
 		let p = read_point(input, 0)?;
 		let fr = read_fr(input, 64)?;
@@ -151,7 +155,9 @@ impl Precompile for Bn128Mul {
 
 		Ok(PrecompileOutput {
 			exit_status: ExitSucceed::Returned,
+			cost: Bn128Mul::GAS_COST,
 			output: buf.to_vec(),
+			logs: Default::default(),
 		})
 	}
 }
@@ -166,22 +172,29 @@ impl Bn128Pairing {
 }
 
 impl Precompile for Bn128Pairing {
-	fn execute(handle: &mut impl PrecompileHandle) -> PrecompileResult {
+	fn execute(
+		input: &[u8],
+		target_gas: Option<u64>,
+		_context: &Context,
+		_is_static: bool,
+	) -> PrecompileResult {
 		use bn::{pairing_batch, AffineG1, AffineG2, Fq, Fq2, Group, Gt, G1, G2};
 
-		let ret_val = if handle.input().is_empty() {
-			handle.record_cost(Bn128Pairing::BASE_GAS_COST)?;
-			U256::one()
+		let (ret_val, gas_cost) = if input.is_empty() {
+			(U256::one(), Bn128Pairing::BASE_GAS_COST)
 		} else {
 			// (a, b_a, b_b - each 64-byte affine coordinates)
-			let elements = handle.input().len() / 192;
+			let elements = input.len() / 192;
 
 			let gas_cost: u64 = Bn128Pairing::BASE_GAS_COST
 				+ (elements as u64 * Bn128Pairing::GAS_COST_PER_PAIRING);
-
-			handle.record_cost(gas_cost)?;
-
-			let input = handle.input();
+			if let Some(gas_left) = target_gas {
+				if gas_left < gas_cost {
+					return Err(PrecompileFailure::Error {
+						exit_status: ExitError::OutOfGas,
+					});
+				}
+			}
 
 			let mut vals = Vec::new();
 			for idx in 0..elements {
@@ -263,9 +276,9 @@ impl Precompile for Bn128Pairing {
 			let mul = pairing_batch(&vals);
 
 			if mul == Gt::one() {
-				U256::one()
+				(U256::one(), gas_cost)
 			} else {
-				U256::zero()
+				(U256::zero(), gas_cost)
 			}
 		};
 
@@ -274,7 +287,9 @@ impl Precompile for Bn128Pairing {
 
 		Ok(PrecompileOutput {
 			exit_status: ExitSucceed::Returned,
+			cost: gas_cost,
 			output: buf.to_vec(),
+			logs: Default::default(),
 		})
 	}
 }

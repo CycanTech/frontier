@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 // This file is part of Frontier.
 //
-// Copyright (c) 2015-2022 Parity Technologies (UK) Ltd.
+// Copyright (c) 2015-2020 Parity Technologies (UK) Ltd.
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -19,18 +19,21 @@
 //! Web3 rpc interface.
 
 use ethereum_types::H256;
-use jsonrpsee::{core::RpcResult as Result, proc_macros::rpc};
+use jsonrpc_core::Result;
+use jsonrpc_derive::rpc;
 
 use crate::types::Bytes;
+
+pub use rpc_impl_Web3Api::gen_server::Web3Api as Web3ApiServer;
 
 /// Web3 rpc interface.
 #[rpc(server)]
 pub trait Web3Api {
 	/// Returns current client version.
-	#[method(name = "web3_clientVersion")]
+	#[rpc(name = "web3_clientVersion")]
 	fn client_version(&self) -> Result<String>;
 
 	/// Returns sha3 of the given data
-	#[method(name = "web3_sha3")]
-	fn sha3(&self, input: Bytes) -> Result<H256>;
+	#[rpc(name = "web3_sha3")]
+	fn sha3(&self, _: Bytes) -> Result<H256>;
 }

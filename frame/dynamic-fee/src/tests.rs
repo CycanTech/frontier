@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // This file is part of Frontier.
 //
-// Copyright (c) 2021-2022 Parity Technologies (UK) Ltd.
+// Copyright (c) 2021 Parity Technologies (UK) Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -103,7 +103,7 @@ frame_support::construct_runtime!(
 fn run_to_block(n: u64) {
 	while System::block_number() < n {
 		DynamicFee::on_finalize(System::block_number());
-		System::set_block_number(System::block_number() + 1);
+		//System::set_block_number(System::block_number() + 1);
 		DynamicFee::on_initialize(System::block_number());
 	}
 }

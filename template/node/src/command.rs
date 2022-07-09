@@ -15,20 +15,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
-
 use clap::Parser;
-use fc_db::frontier_database_dir;
-use frame_benchmarking_cli::BenchmarkCmd;
 use frontier_template_runtime::Block;
 use sc_cli::{ChainSpec, RuntimeVersion, SubstrateCli};
-use sc_service::{DatabaseSource, PartialComponents};
+use sc_service::PartialComponents;
 
 use crate::{
 	chain_spec,
 	cli::{Cli, Subcommand},
-	command_helper::{inherent_benchmark_data, BenchmarkExtrinsicBuilder},
-	service::{self, db_config_dir},
+	service::{self, frontier_database_dir},
 };
 
 impl SubstrateCli for Cli {
@@ -131,18 +126,9 @@ pub fn run() -> sc_cli::Result<()> {
 			let runner = cli.create_runner(cmd)?;
 			runner.sync_run(|config| {
 				// Remove Frontier offchain db
-				let db_config_dir = db_config_dir(&config);
-				let frontier_database_config = match config.database {
-					DatabaseSource::RocksDb { .. } => DatabaseSource::RocksDb {
-						path: frontier_database_dir(&db_config_dir, "db"),
-						cache_size: 0,
-					},
-					DatabaseSource::ParityDb { .. } => DatabaseSource::ParityDb {
-						path: frontier_database_dir(&db_config_dir, "paritydb"),
-					},
-					_ => {
-						return Err(format!("Cannot purge `{:?}` database", config.database).into())
-					}
+				let frontier_database_config = sc_service::DatabaseSource::RocksDb {
+					path: frontier_database_dir(&config),
+					cache_size: 0,
 				};
 				cmd.run(frontier_database_config)?;
 				cmd.run(config.database)
@@ -157,65 +143,20 @@ pub fn run() -> sc_cli::Result<()> {
 					backend,
 					..
 				} = service::new_partial(&config, &cli)?;
-				let aux_revert = Box::new(move |client, _, blocks| {
-					sc_finality_grandpa::revert(client, blocks)?;
-					Ok(())
-				});
-				Ok((cmd.run(client, backend, Some(aux_revert)), task_manager))
+				Ok((cmd.run(client, backend), task_manager))
 			})
 		}
 		Some(Subcommand::Benchmark(cmd)) => {
-			let runner = cli.create_runner(cmd)?;
-			runner.sync_run(|config| {
-				let PartialComponents {
-					client, backend, ..
-				} = service::new_partial(&config, &cli)?;
+			if cfg!(feature = "runtime-benchmarks") {
+				let runner = cli.create_runner(cmd)?;
 
-				// This switch needs to be in the client, since the client decides
-				// which sub-commands it wants to support.
-				match cmd {
-					BenchmarkCmd::Pallet(cmd) => {
-						if !cfg!(feature = "runtime-benchmarks") {
-							return Err(
-								"Runtime benchmarking wasn't enabled when building the node. \
-							You can enable it with `--features runtime-benchmarks`."
-									.into(),
-							);
-						}
-
-						cmd.run::<Block, service::ExecutorDispatch>(config)
-					}
-					BenchmarkCmd::Block(cmd) => cmd.run(client),
-					BenchmarkCmd::Storage(cmd) => {
-						let db = backend.expose_db();
-						let storage = backend.expose_storage();
-
-						cmd.run(config, client, db, storage)
-					}
-					BenchmarkCmd::Overhead(cmd) => {
-						let ext_builder = BenchmarkExtrinsicBuilder::new(client.clone());
-
-						cmd.run(
-							config,
-							client,
-							inherent_benchmark_data()?,
-							Arc::new(ext_builder),
-						)
-					}
-					BenchmarkCmd::Machine(cmd) => cmd.run(
-						&config,
-						frame_benchmarking_cli::SUBSTRATE_REFERENCE_HARDWARE.clone(),
-					),
-				}
-			})
-		}
-		Some(Subcommand::FrontierDb(cmd)) => {
-			let runner = cli.create_runner(cmd)?;
-			runner.sync_run(|config| {
-				let PartialComponents { client, other, .. } = service::new_partial(&config, &cli)?;
-				let frontier_backend = other.2;
-				cmd.run::<_, frontier_template_runtime::opaque::Block>(client, frontier_backend)
-			})
+				runner.sync_run(|config| cmd.run::<Block, service::ExecutorDispatch>(config))
+			} else {
+				Err(
+					"Benchmarking wasn't enabled when building the node. You can enable it with `--features runtime-benchmarks`."
+						.into(),
+				)
+			}
 		}
 		None => {
 			let runner = cli.create_runner(&cli.run.base)?;
